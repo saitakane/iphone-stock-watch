@@ -1,0 +1,45 @@
+name: iPhone在庫チェック
+
+on:
+  schedule:
+    # 5分ごとに起動（GitHubの最短間隔）
+    # ※ 7:00-23:00 JSTだけにしたい場合は下行に差し替え:
+    #   - cron: '*/5 22-23,0-13 * * *'
+    - cron: '*/5 * * * *'
+  workflow_dispatch:   # 手動実行ボタンを出す
+
+permissions:
+  contents: write      # state.txt を保存するために必要
+
+concurrency:
+  group: stock-check   # 同時に2つ動かないようにする
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 在庫チェック
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          LOOPS: '5'
+          INTERVAL: '55'
+          TEST_NOTIFY: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+        run: bash check.sh
+
+      - name: 状態を保存
+        if: always()
+        run: |
+          if [ -f state.txt ] && [ -n "$(git status --porcelain state.txt)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.txt
+            git commit -m "state: $(cat state.txt)"
+            git pull --rebase --autostash
+            git push
+          else
+            echo "状態に変化なし。コミットしません。"
+          fi
