@@ -83,8 +83,8 @@ for i in $(seq 1 "$LOOPS"); do
   echo "[$(date -u '+%H:%M:%S') UTC] チェック#${i} -> ${now}"
 
   if [ "$now" = "IN" ]; then
-    # 在庫あり。状態が変わった瞬間 + 各起動の1回目にリマインド
-    if [ "$old" != "IN" ] || [ "$i" -eq 1 ]; then
+    # 在庫あり: 状態が変わった瞬間 + 在庫がある間は5分おきにリマインド
+    if [ "$old" != "IN" ] || [ $(( i % 5 )) -eq 1 ]; then
       notify "入荷しました！" "${NAME} が在庫ありになりました。今すぐ購入してください。" 5 "rotating_light,tada"
     fi
   elif [ "$now" != "$old" ]; then
