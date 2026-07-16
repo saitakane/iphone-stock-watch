@@ -18,15 +18,15 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
       - name: 在庫チェック
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          LOOPS: '5'
-          INTERVAL: '55'
+          LOOPS: '55'
+          INTERVAL: '60'
           TEST_NOTIFY: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
         run: bash check.sh
 
