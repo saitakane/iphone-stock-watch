@@ -1,111 +1,595 @@
 #!/usr/bin/env bash
 # =========================================================
 # iPhone 16 256GB ピンク（SIMフリー）[整備済製品] 在庫監視
+#
+# 通常時：60秒間隔で監視
+# IN候補時：10秒後、さらに10秒後に再確認
+#
+# 通知条件：
+#   1) 対象品番 FYDY3J/A がある
+#   2) schema.org/InStock がある
+#   3) 「バッグに追加」がある
+#   4) schema.org/OutOfStock / 「在庫切れ」がない
+#   5) 上記を3回連続で確認
 # =========================================================
+
 set -uo pipefail
 
-# ---- 監視対象 ----
+
+# =========================================================
+# 監視対象
+# =========================================================
+
 URL="https://www.apple.com/jp/shop/product/fydy3j/a/iphone-16-256gb-%E3%83%94%E3%83%B3%E3%82%AF-sim%E3%83%95%E3%83%AA%E3%83%BC-%E6%95%B4%E5%82%99%E6%B8%88%E8%A3%BD%E5%93%81"
-PART="FYDY3J/A"          # 品番。ページが正しく取れたかの確認に使う
+
+PART="FYDY3J/A"
+
 NAME="iPhone 16 256GB ピンク（整備済製品）"
 
 UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
 
-LOOPS="${LOOPS:-5}"        # 1回の起動で何回チェックするか
-INTERVAL="${INTERVAL:-55}" # チェックの間隔（秒）
-STATE_FILE="state.txt"     # 前回の状態を覚えておくファイル
 
-# ---- ntfyに通知を送る ----
+# =========================================================
+# 基本設定
+# =========================================================
+
+# check.yml から
+# LOOPS=55
+# INTERVAL=60
+# が渡されます。
+#
+# 万一渡されなかった場合も同じ値で動きます。
+
+LOOPS="${LOOPS:-55}"
+
+INTERVAL="${INTERVAL:-60}"
+
+STATE_FILE="state.txt"
+
+
+# IN候補が出た時だけ使う再確認間隔
+#
+# 1回目
+# ↓ 10秒
+# 2回目
+# ↓ 10秒
+# 3回目
+#
+# 3回すべてINなら通知
+
+CONFIRM_INTERVAL="${CONFIRM_INTERVAL:-10}"
+
+
+# =========================================================
+# ntfyへ通知
+# =========================================================
+
 notify() {
-  local title="$1" message="$2" priority="$3" tags="$4"
+
+  local title="$1"
+  local message="$2"
+  local priority="$3"
+  local tags="$4"
+
   jq -n \
-    --arg topic    "$NTFY_TOPIC" \
-    --arg title    "$title" \
-    --arg message  "$message" \
-    --arg click    "$URL" \
-    --arg tags     "$tags" \
+    --arg topic "$NTFY_TOPIC" \
+    --arg title "$title" \
+    --arg message "$message" \
+    --arg click "$URL" \
+    --arg tags "$tags" \
     --argjson priority "$priority" \
-    '{topic:$topic, title:$title, message:$message,
-      priority:$priority, tags:($tags|split(",")), click:$click}' \
-  | curl -s -m 15 -X POST -H "Content-Type: application/json" -d @- https://ntfy.sh > /dev/null
+    '{
+      topic:$topic,
+      title:$title,
+      message:$message,
+      priority:$priority,
+      tags:($tags|split(",")),
+      click:$click
+    }' \
+  | curl -sS \
+      -m 8 \
+      -X POST \
+      -H "Content-Type: application/json" \
+      -d @- \
+      https://ntfy.sh \
+      > /dev/null
+
   echo ">>> 通知を送信: $title"
 }
 
-# ---- 1回だけ在庫を見る。結果を IN / OUT / ERR で返す ----
+
+# =========================================================
+# Appleの商品ページを1回確認
+#
+# 結果
+#
+# IN  = 在庫あり条件を確認
+# OUT = 在庫なし
+# ERR = 判定不能
+# =========================================================
+
 check_once() {
-  local body code
-  body=$(mktemp)
-  code=$(curl -sL -o "$body" -w '%{http_code}' -m 25 \
-           -A "$UA" \
-           -H 'Accept-Language: ja-JP,ja;q=0.9' \
-           -H 'Accept: text/html,application/xhtml+xml' \
-           "$URL")
 
-  # HTTPステータスが200以外＝取得失敗
+  local body
+  local code
+  local curl_rc
+
+  body="$(mktemp)"
+
+
+  # -------------------------------------------------------
+  # Appleページ取得
+  #
+  # キャッシュされた古い情報を極力避けるため
+  # Cache-Control / Pragma を追加
+  # -------------------------------------------------------
+
+  code="$(
+    curl -sS \
+         -L \
+         -o "$body" \
+         -w '%{http_code}' \
+         -m 10 \
+         -A "$UA" \
+         -H 'Accept-Language: ja-JP,ja;q=0.9' \
+         -H 'Accept: text/html,application/xhtml+xml' \
+         -H 'Cache-Control: no-cache' \
+         -H 'Pragma: no-cache' \
+         "$URL"
+  )"
+
+  curl_rc=$?
+
+
+  # -------------------------------------------------------
+  # curlそのものが失敗
+  # -------------------------------------------------------
+
+  if [ "$curl_rc" -ne 0 ]; then
+
+    echo "  curl失敗（exit=${curl_rc}）" >&2
+
+    rm -f "$body"
+
+    echo "ERR"
+
+    return
+
+  fi
+
+
+  # -------------------------------------------------------
+  # HTTP 200以外
+  # -------------------------------------------------------
+
   if [ "$code" != "200" ]; then
+
     echo "  HTTP $code が返りました" >&2
-    rm -f "$body"; echo "ERR"; return
+
+    rm -f "$body"
+
+    echo "ERR"
+
+    return
+
   fi
 
-  # 品番が無い＝別のページ（ボット判定ページ等）を掴んでいる
+
+  # -------------------------------------------------------
+  # 対象商品か確認
+  #
+  # Appleのボット判定ページや別ページを
+  # 誤って在庫判定しないため
+  # -------------------------------------------------------
+
   if ! grep -qF "$PART" "$body"; then
-    echo "  品番 $PART が見つかりません（ブロックの可能性）" >&2
-    rm -f "$body"; echo "ERR"; return
+
+    echo "  品番 $PART が見つかりません" >&2
+    echo "  別ページ・ブロック・HTML仕様変更の可能性があります" >&2
+
+    rm -f "$body"
+
+    echo "ERR"
+
+    return
+
   fi
 
-  # 在庫切れ
-  if grep -qF 'schema.org/OutOfStock' "$body"; then
-    rm -f "$body"; echo "OUT"; return
+
+  # -------------------------------------------------------
+  # 在庫切れ判定
+  #
+  # OutOfStock または「在庫切れ」が存在したら
+  # OUTを最優先
+  # -------------------------------------------------------
+
+  if grep -qF 'schema.org/OutOfStock' "$body" \
+     || grep -qF '在庫切れ' "$body"; then
+
+    rm -f "$body"
+
+    echo "OUT"
+
+    return
+
   fi
 
-  # 在庫あり
+
+  # -------------------------------------------------------
+  # 在庫あり判定
+  #
+  # InStock だけでは信用しない
+  #
+  # さらに
+  #
+  # 「バッグに追加」
+  #
+  # が存在することを確認
+  # -------------------------------------------------------
+
+  if grep -qF 'schema.org/InStock' "$body" \
+     && grep -qF 'バッグに追加' "$body"; then
+
+    rm -f "$body"
+
+    echo "IN"
+
+    return
+
+  fi
+
+
+  # -------------------------------------------------------
+  # 矛盾・判定不能
+  # -------------------------------------------------------
+
   if grep -qF 'schema.org/InStock' "$body"; then
-    rm -f "$body"; echo "IN"; return
+
+    echo "  InStock はありますが" >&2
+    echo "  『バッグに追加』がありません" >&2
+    echo "  誤検知防止のためERR扱いにします" >&2
+
+  elif grep -qF 'バッグに追加' "$body"; then
+
+    echo "  『バッグに追加』はありますが" >&2
+    echo "  InStock がありません" >&2
+    echo "  誤検知防止のためERR扱いにします" >&2
+
+  else
+
+    echo "  在庫状態を確定できるシグナルがありません" >&2
+
   fi
 
-  # どちらでもない＝仕様が変わったかも。念のためERR扱いで知らせる
-  echo "  OutOfStock/InStock のどちらも見つかりません" >&2
-  rm -f "$body"; echo "ERR"
+
+  rm -f "$body"
+
+  echo "ERR"
 }
 
-# ---- ここから本体 ----
-old="OUT"
-[ -f "$STATE_FILE" ] && old="$(cat "$STATE_FILE")"
-echo "前回の状態: $old"
 
-# 手動実行のときだけテスト通知を飛ばす
-if [ "${TEST_NOTIFY:-0}" = "1" ]; then
-  notify "テスト通知" "監視は正常に動いています。現在の状態: ${old}" 3 "white_check_mark"
+# =========================================================
+# IN候補を追加確認
+#
+# 最初のIN
+# ↓
+# 10秒後 IN
+# ↓
+# 10秒後 IN
+#
+# 3回連続した場合のみ成功
+# =========================================================
+
+confirm_in_stock() {
+
+  local r2
+  local r3
+
+
+  echo "  IN候補を検出しました"
+  echo "  まだ通知しません"
+  echo "  ${CONFIRM_INTERVAL}秒後に再確認します"
+
+
+  sleep "$CONFIRM_INTERVAL"
+
+
+  r2="$(check_once)"
+
+  echo "  確認2/3 -> $r2"
+
+
+  if [ "$r2" != "IN" ]; then
+
+    echo "  在庫確定を中止します"
+    echo "  2回目がINではありません"
+
+    return 1
+
+  fi
+
+
+  sleep "$CONFIRM_INTERVAL"
+
+
+  r3="$(check_once)"
+
+  echo "  確認3/3 -> $r3"
+
+
+  if [ "$r3" != "IN" ]; then
+
+    echo "  在庫確定を中止します"
+    echo "  3回目がINではありません"
+
+    return 1
+
+  fi
+
+
+  echo "  ★ 3回連続で購入可能条件を確認しました"
+
+  return 0
+}
+
+
+# =========================================================
+# IN → OUT の確認
+#
+# 1回だけOUTになった場合は
+# Appleページの揺れの可能性があるため
+# 10秒後に再確認
+# =========================================================
+
+confirm_out_of_stock() {
+
+  local r2
+
+
+  echo "  OUT候補を検出しました"
+  echo "  ${CONFIRM_INTERVAL}秒後に再確認します"
+
+
+  sleep "$CONFIRM_INTERVAL"
+
+
+  r2="$(check_once)"
+
+
+  echo "  OUT再確認 -> $r2"
+
+
+  [ "$r2" = "OUT" ]
+}
+
+
+# =========================================================
+# 本体
+# =========================================================
+
+old="OUT"
+
+
+# ---------------------------------------------------------
+# state.txt 読み込み
+# ---------------------------------------------------------
+
+if [ -f "$STATE_FILE" ]; then
+
+  old="$(tr -d '\r\n' < "$STATE_FILE")"
+
 fi
 
+
+# ---------------------------------------------------------
+# 旧バージョンでは ERR がstate.txtに保存されることがあったため
+# 新版では IN / OUT 以外はOUTとして再確認
+# ---------------------------------------------------------
+
+case "$old" in
+
+  IN|OUT)
+    ;;
+
+  *)
+    old="OUT"
+    ;;
+
+esac
+
+
+echo "========================================"
+
+echo "iPhone在庫監視開始"
+
+echo "前回の確定状態: $old"
+
+echo "通常監視間隔: ${INTERVAL}秒"
+
+echo "IN候補時:"
+echo "${CONFIRM_INTERVAL}秒間隔で追加2回確認"
+
+echo "合計3回連続INで通知"
+
+echo "========================================"
+
+
+# =========================================================
+# 監視ループ
+# =========================================================
+
 for i in $(seq 1 "$LOOPS"); do
+
+
   now="$(check_once)"
+
+
   echo "[$(date -u '+%H:%M:%S') UTC] チェック#${i} -> ${now}"
 
-  if [ "$now" = "IN" ]; then
-    # 在庫あり: 状態が変わった瞬間 + 在庫がある間は5分おきにリマインド
-    if [ "$old" != "IN" ] || [ $(( i % 5 )) -eq 1 ]; then
-      notify "入荷しました！" "${NAME} が在庫ありになりました。今すぐ購入してください。" 5 "rotating_light,tada"
-    fi
-  elif [ "$now" != "$old" ]; then
-    case "$now" in
-      OUT)
-        if [ "$old" = "IN" ]; then
-          notify "売り切れました" "${NAME} は在庫なしに戻りました。監視を続けます。" 2 "x"
+
+  case "$now" in
+
+
+    # =====================================================
+    # IN候補
+    # =====================================================
+
+    IN)
+
+      # ---------------------------------------------------
+      # すでにINを通知済み
+      # ---------------------------------------------------
+
+      if [ "$old" = "IN" ]; then
+
+        echo "  在庫あり継続中"
+        echo "  すでに通知済みなので再通知しません"
+
+
+      else
+
+        # -------------------------------------------------
+        # OUT → IN候補
+        #
+        # 追加2回チェック
+        # -------------------------------------------------
+
+        if confirm_in_stock; then
+
+
+          old="IN"
+
+
+          echo "$old" > "$STATE_FILE"
+
+
+          notify \
+            "入荷しました！" \
+            "${NAME} の購入可能状態を3回連続で確認しました。今すぐ購入ページを確認してください。" \
+            5 \
+            "rotating_light,tada"
+
+
         else
-          notify "監視が復旧しました" "ページを正常に取得できました。監視を続けます。" 2 "arrows_counterclockwise"
-        fi ;;
-      ERR)
-        notify "監視エラー" "ページを取得できません。GitHubのログを確認してください。" 4 "warning" ;;
-    esac
+
+
+          echo "  誤検知または一時的な表示揺れと判断しました"
+
+          echo "  通知は送りません"
+
+
+        fi
+
+      fi
+
+      ;;
+
+
+    # =====================================================
+    # OUT
+    # =====================================================
+
+    OUT)
+
+
+      # ---------------------------------------------------
+      # 前回までINだった場合
+      # ---------------------------------------------------
+
+      if [ "$old" = "IN" ]; then
+
+
+        # OUTも2回確認する
+
+        if confirm_out_of_stock; then
+
+
+          old="OUT"
+
+
+          echo "$old" > "$STATE_FILE"
+
+
+          echo "  在庫なしを2回連続で確認しました"
+
+          echo "  確定状態をOUTに戻しました"
+
+
+          # 「売り切れました」の通知は送らない
+
+
+        else
+
+
+          echo "  OUTは一時的な表示揺れと判断しました"
+
+          echo "  確定状態INを維持します"
+
+
+        fi
+
+
+      else
+
+
+        # すでにOUTの場合
+
+        if [ ! -f "$STATE_FILE" ] \
+           || [ "$(tr -d '\r\n' < "$STATE_FILE" 2>/dev/null || true)" != "OUT" ]; then
+
+
+          echo "OUT" > "$STATE_FILE"
+
+
+        fi
+
+
+      fi
+
+      ;;
+
+
+    # =====================================================
+    # ERR
+    # =====================================================
+
+    ERR)
+
+
+      echo "  判定不能です"
+
+      echo "  確定状態は $old のまま維持します"
+
+      echo "  通知は送りません"
+
+
+      # ERRではstate.txtを書き換えない
+
+
+      ;;
+
+
+  esac
+
+
+  # -------------------------------------------------------
+  # 次回通常チェックまで60秒
+  # -------------------------------------------------------
+
+  if [ "$i" -lt "$LOOPS" ]; then
+
+    sleep "$INTERVAL"
+
   fi
 
-  if [ "$now" != "$old" ]; then
-    old="$now"
-    echo "$now" > "$STATE_FILE"
-  fi
 
-  [ "$i" -lt "$LOOPS" ] && sleep "$INTERVAL"
 done
 
-echo "完了。最終状態: $old"
+
+echo "========================================"
+
+echo "監視終了"
+
+echo "最終確定状態: $old"
+
+echo "========================================"
