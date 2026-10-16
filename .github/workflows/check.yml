@@ -13,7 +13,8 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: write   # state.txt のコミット用
+  actions: write    # 自己連鎖（workflow_dispatch）用
 
 concurrency:
   group: stock-check
@@ -21,18 +22,17 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 在庫チェック
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           LOOPS: '55'
           INTERVAL: '60'
-          # 手動実行のときだけテスト通知。連鎖起動では鳴らさない
           TEST_NOTIFY: ${{ (github.event_name == 'workflow_dispatch' && !inputs.chained) && '1' || '0' }}
         run: bash check.sh
 
@@ -50,14 +50,14 @@ jobs:
             echo "状態に変化なし。コミットしません。"
           fi
 
-      # ===== ここが今回の主役：自分で自分の次を予約する =====
       - name: 次の実行を予約（自己連鎖）
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.CHAIN_TOKEN }}
+          GH_TOKEN: ${{ github.token }}      # ← PAT不要。毎回自動発行
+          GH_REPO: ${{ github.repository }}
         run: |
           H=$(TZ='Asia/Tokyo' date +%H)
-          H=$((10#$H))   # 08 や 09 を8進数と誤解させないための書き方
+          H=$((10#$H))
           if [ "$H" -ge 7 ] && [ "$H" -le 21 ]; then
             echo "現在 ${H}時(JST) → 次の実行を予約します"
             gh workflow run check.yml --ref main -f chained=true
