@@ -29,7 +29,9 @@ TARGETS=(
   "ultramarine|ウルトラマリン|https://www.apple.com/jp/shop/product/fye03j/a/iphone-16-256gb-%E3%82%A6%E3%83%AB%E3%83%88%E3%83%A9%E3%83%9E%E3%83%AA%E3%83%B3-sim%E3%83%95%E3%83%AA%E3%83%BC-%E6%95%B4%E5%82%99%E6%B8%88%E8%A3%BD%E5%93%81"
   "teal|ティール|https://www.apple.com/jp/shop/product/fye13j/a/iphone-16-256gb-%E3%83%86%E3%82%A3%E3%83%BC%E3%83%AB-sim%E3%83%95%E3%83%AA%E3%83%BC-%E6%95%B4%E5%82%99%E6%B8%88%E8%A3%BD%E5%93%81"
   "white|ホワイト|https://www.apple.com/jp/shop/product/fydx3j/a/iphone-16-256gb-%E3%83%9B%E3%83%AF%E3%82%A4%E3%83%88-sim%E3%83%95%E3%83%AA%E3%83%BC-%E6%95%B4%E5%82%99%E6%B8%88%E8%A3%BD%E5%93%81"
+  "black|ブラック|https://www.apple.com/jp/shop/product/fydw3j/a/iphone-16-256gb-%E3%83%96%E3%83%A9%E3%83%83%E3%82%AF-sim%E3%83%95%E3%83%AA%E3%83%BC-%E6%95%B4%E5%82%99%E6%B8%88%E8%A3%BD%E5%93%81"
 )
+
 
 LIST_URL="https://www.apple.com/jp/shop/refurbished/iphone"
 
