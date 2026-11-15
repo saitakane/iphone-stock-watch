@@ -11,13 +11,22 @@ on:
         description: '自動連鎖用（手動実行するときは触らないでください）'
         type: boolean
         default: false
+      simulate:
+        description: '通知テスト用：入荷した体で通知を送るカラー（pink / ultramarine / teal / white。通常は空欄）'
+        type: string
+        default: ''
+      probe_url:
+        description: '判定テスト用：在庫ありの商品ページURLを貼ると、1回だけ判定して終了（通常は空欄）'
+        type: string
+        default: ''
 
 permissions:
-  contents: write   # state.txt のコミット用
+  contents: write   # state/ のコミット用
   actions: write    # 自己連鎖（workflow_dispatch）用
 
 concurrency:
-  group: stock-check
+  # simulate指定のテスト実行は別グループ（本番ジョブの終了待ちをせず即実行。状態も保存しない）
+  group: ${{ (inputs.simulate || inputs.probe_url) && 'stock-check-test' || 'stock-check' }}
   cancel-in-progress: false
 
 jobs:
@@ -31,19 +40,24 @@ jobs:
       - name: 在庫チェック
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          LOOPS: '55'
+          # 手動実行（テスト）は2ループだけで終了。通常・連鎖は55ループ
+          LOOPS: ${{ (github.event_name == 'workflow_dispatch' && !inputs.chained) && '2' || '55' }}
           INTERVAL: '60'
           TEST_NOTIFY: ${{ (github.event_name == 'workflow_dispatch' && !inputs.chained) && '1' || '0' }}
+          SIMULATE_IN: ${{ (github.event_name == 'workflow_dispatch' && !inputs.chained) && inputs.simulate || '' }}
+          PROBE_URL: ${{ (github.event_name == 'workflow_dispatch' && !inputs.chained) && inputs.probe_url || '' }}
         run: bash check.sh
 
       - name: 状態を保存
         if: always()
         run: |
-          if [ -f state.txt ] && [ -n "$(git status --porcelain state.txt)" ]; then
+          if [ -d state ] && [ -n "$(git status --porcelain state)" ]; then
             git config user.name  "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add state.txt
-            git commit -m "state: $(cat state.txt)"
+            git add state
+            MSG="state:"
+            for f in state/*.txt; do MSG="$MSG $(basename "$f" .txt)=$(cat "$f")"; done
+            git commit -m "$MSG"
             git pull --rebase --autostash
             git push
           else
